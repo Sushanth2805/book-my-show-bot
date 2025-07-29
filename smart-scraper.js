@@ -46,6 +46,9 @@ const THEATRE_PATTERNS = {
     "carnival",
     // Local/specific theatres
     "vyjayanthi",
+    "uk cineplex",
+    "uk",
+    "cineplex",
     "sandhya",
     "sudarshan",
     "talluri",
@@ -86,24 +89,6 @@ const THEATRE_PATTERNS = {
 };
 
 const HARDCODED_MOVIES = [
-  {
-    name: "Kingdom",
-    url: "https://in.bookmyshow.com/movies/hyderabad/kingdom/buytickets/ET00433664/20250731",
-    emoji: "👑",
-    releaseDate: "July 31, 2025",
-  },
-  {
-    name: "Dhadak 2",
-    url: "https://in.bookmyshow.com/movies/hyderabad/dhadak-2/buytickets/ET00399488/20250801",
-    emoji: "💖",
-    releaseDate: "August 1, 2025",
-  },
-  {
-    name: "Son of Sardaar 2",
-    url: "https://in.bookmyshow.com/movies/hyderabad/son-of-sardaar-2/buytickets/ET00450471/20250801",
-    emoji: "🗡️",
-    releaseDate: "August 1, 2025",
-  },
   {
     name: "Coolie",
     url: "https://in.bookmyshow.com/movies/hyderabad/coolie/buytickets/ET00395817/20250814",
@@ -198,7 +183,7 @@ function extractMovieName(url) {
 }
 
 /**
- * Determines if a line matches theatre criteria
+ * Enhanced theatre line detection for longer theatre names
  */
 function isTheatreLine(line) {
   return (
@@ -209,30 +194,57 @@ function isTheatreLine(line) {
       /(cinema|theatre|theatres)\s*:/i.test(line) ||
       /:\s*(hyderabad|nacharam|kushaiguda|rtc)/i.test(line)) &&
     line.length > 5 &&
-    line.length < 100 &&
+    line.length < 200 && // Increased from 100 to 200 for longer theatre names
     !line.includes("http") &&
     !line.includes("Select") &&
     !line.match(/^\d+$/) &&
     !THEATRE_PATTERNS.EXCLUDE_PATTERNS.some((pattern) => pattern.test(line)) &&
     (line.includes(":") ||
       line.includes(",") ||
+      line.includes(" - ") || // Additional separator
       THEATRE_PATTERNS.LOCATIONS.some((loc) =>
         line.toLowerCase().includes(loc)
       ) ||
-      /\d+(mm|k)/i.test(line))
+      /\d+(mm|k)/i.test(line) ||
+      THEATRE_PATTERNS.TIME_REGEX.test(line)) // Check for inline times
   );
 }
 
 /**
- * Extracts showtimes from nearby lines
+ * Enhanced showtime extraction with better range handling
  */
-function extractShowtimes(lines, centerIndex, range = 8) {
+function extractShowtimes(lines, centerIndex, range = 15) {
   const showtimes = [];
-  const start = Math.max(0, centerIndex - 3);
+  const start = Math.max(0, centerIndex - 5);
   const end = Math.min(centerIndex + range, lines.length);
 
+  // Extract from the specified range
   for (let i = start; i < end; i++) {
     const timeMatches = lines[i].match(THEATRE_PATTERNS.TIME_REGEX);
+    if (timeMatches) {
+      showtimes.push(...timeMatches);
+    }
+  }
+
+  // Additional pass: Look for showtimes in the same line as theatre name
+  if (centerIndex < lines.length) {
+    const currentLine = lines[centerIndex];
+    const inlineTimes = currentLine.match(THEATRE_PATTERNS.TIME_REGEX) || [];
+    showtimes.push(...inlineTimes);
+  }
+
+  // Look for showtimes in the next few lines (common pattern)
+  for (
+    let i = centerIndex + 1;
+    i < Math.min(centerIndex + 8, lines.length);
+    i++
+  ) {
+    const line = lines[i];
+    // Skip lines that look like theatre names
+    if (line.length > 50 || line.includes("http") || line.includes("Select"))
+      continue;
+
+    const timeMatches = line.match(THEATRE_PATTERNS.TIME_REGEX);
     if (timeMatches) {
       showtimes.push(...timeMatches);
     }
@@ -270,33 +282,264 @@ function improveTheatreName(lines, lineIndex, originalName) {
 // ================================
 
 /**
- * Optimized theatre and showtime extraction
+ * Enhanced theatre and showtime extraction for long lists
  */
 function extractTheatresAndShowtimes(bodyText) {
   const lines = bodyText.split("\n").filter((line) => line.trim());
   const theatreMap = new Map();
 
+  // Enhanced theatre detection patterns
+  const theatrePatterns = [
+    // Specific theatre patterns for Vyjayanthi and UK Cineplex
+    /^([^:]*vyjayanthi[^:]*):/i,
+    /^([^:]*uk\s*cineplex[^:]*):/i,
+    // Direct theatre patterns
+    /^([^:]+(?:cinema|multiplex|mall|theatre|pvr|inox|miraj|asian|aparna|amb|gpr|cinemax|cinepolis|carnival)[^:]*):/i,
+    // Location-based patterns
+    /^([^:]+(?:hyderabad|nacharam|kushaiguda|secunderabad|moula ali|ecil)[^:]*):/i,
+    // Generic theatre patterns
+    /^([^:]+(?:cinema|theatre|theatres)[^:]*):/i,
+    // Time-based patterns (theatre name followed by times)
+    /^([^:]+):\s*\d{1,2}:\d{2}\s*(am|pm|AM|PM)/i,
+    // Theatre name with dash separator
+    /^([^-]+(?:cinema|multiplex|mall|theatre|pvr|inox|miraj|asian|aparna|amb|gpr|cinemax|cinepolis|carnival)[^-]*)-/i,
+    // Theatre name with dot separator
+    /^([^.]+(?:cinema|multiplex|mall|theatre|pvr|inox|miraj|asian|aparna|amb|gpr|cinemax|cinepolis|carnival)[^.]*)\./i,
+    // Theatre name with parentheses
+    /^([^(]+(?:cinema|multiplex|mall|theatre|pvr|inox|miraj|asian|aparna|amb|gpr|cinemax|cinepolis|carnival)[^(]*)/i,
+  ];
+
+  // First pass: Find all potential theatre lines
+  const theatreCandidates = [];
+
   lines.forEach((line, index) => {
     const trimmedLine = line.trim();
 
-    if (isTheatreLine(trimmedLine)) {
-      const showtimes = extractShowtimes(lines, index);
+    // Check if line matches any theatre pattern
+    let isTheatre = false;
+    let theatreName = null;
 
-      if (showtimes.length > 0) {
-        const theatreName = improveTheatreName(lines, index, trimmedLine);
-        const normalizedKey = theatreName
-          .toLowerCase()
-          .replace(/[^\w\s]/g, "")
-          .replace(/\s+/g, " ")
-          .trim();
+    for (const pattern of theatrePatterns) {
+      const match = trimmedLine.match(pattern);
+      if (match) {
+        isTheatre = true;
+        theatreName = match[1].trim();
+        break;
+      }
+    }
 
-        if (!theatreMap.has(normalizedKey)) {
-          theatreMap.set(normalizedKey, { theatre: theatreName, showtimes });
-        } else {
-          const existing = theatreMap.get(normalizedKey);
-          existing.showtimes = [
-            ...new Set([...existing.showtimes, ...showtimes]),
-          ];
+    // Also check the original criteria for backward compatibility
+    if (!isTheatre && isTheatreLine(trimmedLine)) {
+      isTheatre = true;
+      theatreName = trimmedLine;
+    }
+
+    if (isTheatre && theatreName) {
+      theatreCandidates.push({
+        index,
+        name: theatreName,
+        originalLine: trimmedLine,
+      });
+    }
+  });
+
+  // Second pass: Extract showtimes for each theatre with expanded range
+  theatreCandidates.forEach((candidate) => {
+    const { index, name, originalLine } = candidate;
+
+    // Expanded showtime extraction range (15 lines instead of 8)
+    const showtimes = extractShowtimes(lines, index, 15);
+
+    // Additional showtime extraction from the same line
+    const inlineTimes = originalLine.match(THEATRE_PATTERNS.TIME_REGEX) || [];
+    showtimes.push(...inlineTimes);
+
+    if (showtimes.length > 0) {
+      // Improve theatre name with better context
+      const improvedName = improveTheatreName(lines, index, name);
+
+      // More flexible normalization
+      const normalizedKey = improvedName
+        .toLowerCase()
+        .replace(/[^\w\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // Handle duplicates more intelligently
+      if (!theatreMap.has(normalizedKey)) {
+        theatreMap.set(normalizedKey, {
+          theatre: improvedName,
+          showtimes: [...new Set(showtimes)],
+        });
+      } else {
+        const existing = theatreMap.get(normalizedKey);
+        const allShowtimes = [
+          ...new Set([...existing.showtimes, ...showtimes]),
+        ];
+        existing.showtimes = allShowtimes;
+
+        // Keep the better theatre name (longer/more descriptive)
+        if (improvedName.length > existing.theatre.length) {
+          existing.theatre = improvedName;
+        }
+      }
+    }
+  });
+
+  // Third pass: Look for additional theatres that might have been missed
+  // This handles cases where theatres are listed without clear patterns
+  lines.forEach((line, index) => {
+    const trimmedLine = line.trim();
+
+    // Skip if already processed
+    if (theatreCandidates.some((c) => c.index === index)) return;
+
+    // Look for lines that contain theatre keywords but weren't caught
+    const hasTheatreKeyword = THEATRE_PATTERNS.KEYWORDS.some((keyword) =>
+      trimmedLine.toLowerCase().includes(keyword)
+    );
+
+    const hasTime = THEATRE_PATTERNS.TIME_REGEX.test(trimmedLine);
+
+    if (
+      hasTheatreKeyword &&
+      hasTime &&
+      trimmedLine.length > 10 &&
+      trimmedLine.length < 150
+    ) {
+      // Extract theatre name (everything before the first time)
+      const timeMatch = trimmedLine.match(THEATRE_PATTERNS.TIME_REGEX);
+      if (timeMatch) {
+        const timeIndex = trimmedLine.indexOf(timeMatch[0]);
+        const theatreName = trimmedLine.substring(0, timeIndex).trim();
+
+        if (theatreName.length > 3) {
+          const showtimes =
+            trimmedLine.match(THEATRE_PATTERNS.TIME_REGEX) || [];
+          const normalizedKey = theatreName
+            .toLowerCase()
+            .replace(/[^\w\s]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!theatreMap.has(normalizedKey)) {
+            theatreMap.set(normalizedKey, {
+              theatre: theatreName,
+              showtimes: [...new Set(showtimes)],
+            });
+          }
+        }
+      }
+    }
+  });
+
+  return Array.from(theatreMap.values());
+}
+
+/**
+ * Alternative theatre extraction method for missed theatres
+ */
+function extractTheatresAlternative(bodyText) {
+  const lines = bodyText.split("\n").filter((line) => line.trim());
+  const theatreMap = new Map();
+
+  // Specific theatres to look for
+  const specificTheatres = ["vyjayanthi", "uk cineplex", "uk", "cineplex"];
+
+  // Look for lines that contain both theatre keywords and times
+  lines.forEach((line, index) => {
+    const trimmedLine = line.trim();
+
+    // Skip very short or very long lines
+    if (trimmedLine.length < 8 || trimmedLine.length > 300) return;
+
+    // Check if line contains theatre keywords
+    const hasTheatreKeyword = THEATRE_PATTERNS.KEYWORDS.some((keyword) =>
+      trimmedLine.toLowerCase().includes(keyword)
+    );
+
+    // Check if line contains specific theatres we want
+    const hasSpecificTheatre = specificTheatres.some((theatre) =>
+      trimmedLine.toLowerCase().includes(theatre)
+    );
+
+    // Check if line contains times
+    const times = trimmedLine.match(THEATRE_PATTERNS.TIME_REGEX) || [];
+
+    if ((hasTheatreKeyword || hasSpecificTheatre) && times.length > 0) {
+      // Try to extract theatre name by finding the part before the first time
+      const firstTime = times[0];
+      const timeIndex = trimmedLine.indexOf(firstTime);
+
+      if (timeIndex > 0) {
+        let theatreName = trimmedLine.substring(0, timeIndex).trim();
+
+        // Clean up theatre name
+        theatreName = theatreName
+          .replace(/^[^a-zA-Z]*/, "")
+          .replace(/[^a-zA-Z0-9\s\-\.\(\)]*$/, "");
+
+        if (theatreName.length > 3 && theatreName.length < 100) {
+          const normalizedKey = theatreName
+            .toLowerCase()
+            .replace(/[^\w\s]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!theatreMap.has(normalizedKey)) {
+            theatreMap.set(normalizedKey, {
+              theatre: theatreName,
+              showtimes: [...new Set(times)],
+            });
+          }
+        }
+      }
+    }
+  });
+
+  // Additional pass specifically for Vyjayanthi and UK Cineplex
+  lines.forEach((line, index) => {
+    const trimmedLine = line.trim();
+
+    // Look specifically for these theatres even without times in the same line
+    if (
+      trimmedLine.toLowerCase().includes("vyjayanthi") ||
+      trimmedLine.toLowerCase().includes("uk cineplex") ||
+      (trimmedLine.toLowerCase().includes("uk") &&
+        trimmedLine.toLowerCase().includes("cineplex"))
+    ) {
+      // Look for times in nearby lines
+      const nearbyTimes = [];
+      for (
+        let i = Math.max(0, index - 5);
+        i < Math.min(lines.length, index + 10);
+        i++
+      ) {
+        const times = lines[i].match(THEATRE_PATTERNS.TIME_REGEX) || [];
+        nearbyTimes.push(...times);
+      }
+
+      if (nearbyTimes.length > 0) {
+        let theatreName = trimmedLine;
+
+        // Clean up theatre name
+        theatreName = theatreName
+          .replace(/^[^a-zA-Z]*/, "")
+          .replace(/[^a-zA-Z0-9\s\-\.\(\)]*$/, "");
+
+        if (theatreName.length > 3 && theatreName.length < 100) {
+          const normalizedKey = theatreName
+            .toLowerCase()
+            .replace(/[^\w\s]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!theatreMap.has(normalizedKey)) {
+            theatreMap.set(normalizedKey, {
+              theatre: theatreName,
+              showtimes: [...new Set(nearbyTimes)],
+            });
+          }
         }
       }
     }
@@ -369,18 +612,229 @@ async function analyzeMoviePage(url) {
         pageText.match(/(\d{1,2} \w{3}, \d{4})/);
       const releaseDate = releaseDateMatch ? releaseDateMatch[1] : null;
 
-      return {
+      // Comprehensive content extraction function
+      const extractAllContent = async () => {
+        let allText = "";
+
+        // Function to expand all possible content
+        const expandAllContent = () => {
+          // Scroll to bottom multiple times to trigger lazy loading
+          for (let i = 0; i < 5; i++) {
+            window.scrollTo(0, document.body.scrollHeight);
+          }
+
+          // Find and click all expansion buttons
+          const allButtons = document.querySelectorAll("button, a, div, span");
+          allButtons.forEach((button) => {
+            const text = button.textContent.toLowerCase();
+            if (
+              text.includes("show more") ||
+              text.includes("load more") ||
+              text.includes("view all") ||
+              text.includes("expand") ||
+              text.includes("see more") ||
+              text.includes("load all") ||
+              text.includes("show all") ||
+              text.includes("view more")
+            ) {
+              try {
+                button.click();
+              } catch (e) {
+                // Ignore click errors
+              }
+            }
+          });
+
+          // Wait for content to load
+          return new Promise((resolve) => setTimeout(resolve, 3000));
+        };
+
+        // Expand content multiple times to ensure we get everything
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await expandAllContent();
+
+          // Get current text content
+          const currentText = document.body.innerText;
+          if (currentText.length > allText.length) {
+            allText = currentText;
+          }
+
+          // Also try to get text from specific theatre-related elements
+          const theatreElements = document.querySelectorAll(
+            '[class*="theatre"], [class*="cinema"], [class*="venue"], [id*="theatre"], [id*="cinema"]'
+          );
+          theatreElements.forEach((element) => {
+            allText += "\n" + element.textContent;
+          });
+        }
+
+        return allText;
+      };
+
+      return extractAllContent().then((bodyText) => ({
         movieTitle,
         releaseDate,
         hasInterestedButton,
         hasBookTicketsButton,
         hasReleasingText,
-        bodyText: document.body.innerText,
-      };
+        bodyText,
+      }));
     });
 
-    // Extract theatres using optimized function
-    const theatres = extractTheatresAndShowtimes(pageData.bodyText);
+    // Extract theatres using enhanced function
+    let theatres = extractTheatresAndShowtimes(pageData.bodyText);
+
+    // Debug information for theatre extraction
+    console.log(`🔍 Theatre extraction debug:`);
+    console.log(
+      `   📄 Total page lines: ${pageData.bodyText.split("\n").length}`
+    );
+    console.log(`   🎭 Theatres found: ${theatres.length}`);
+    if (theatres.length > 0) {
+      console.log(
+        `   📊 Sample theatres: ${theatres
+          .slice(0, 3)
+          .map((t) => t.theatre)
+          .join(", ")}`
+      );
+    }
+
+    // Additional debug: Check for theatre-related content in page
+    const theatreKeywords = ["theatre", "cinema", "pvr", "inox", "multiplex"];
+    const foundKeywords = theatreKeywords.filter((keyword) =>
+      pageData.bodyText.toLowerCase().includes(keyword)
+    );
+    console.log(
+      `🔍 Theatre keywords found in page: ${foundKeywords.join(", ")}`
+    );
+
+    // Check for time patterns in the page
+    const timeMatches =
+      pageData.bodyText.match(THEATRE_PATTERNS.TIME_REGEX) || [];
+    console.log(`🔍 Time patterns found: ${timeMatches.length}`);
+
+    // Check specifically for Vyjayanthi and UK Cineplex
+    const specificTheatres = ["vyjayanthi", "uk cineplex"];
+    const foundSpecificTheatres = specificTheatres.filter((theatre) =>
+      pageData.bodyText.toLowerCase().includes(theatre)
+    );
+    if (foundSpecificTheatres.length > 0) {
+      console.log(
+        `🎯 Target theatres found in page: ${foundSpecificTheatres.join(", ")}`
+      );
+    } else {
+      console.log(
+        "⚠️ Target theatres (Vyjayanthi, UK Cineplex) not found in page content"
+      );
+    }
+
+    // Enhanced fallback: Try multiple strategies to get complete theatre list
+    if (theatres.length < 10) {
+      console.log(
+        "🔄 Theatre count seems low, trying comprehensive extraction..."
+      );
+
+      // Strategy 1: Try different page scrolling and expansion
+      const additionalContent = await page.evaluate(() => {
+        // Scroll multiple times to trigger all lazy loading
+        for (let i = 0; i < 10; i++) {
+          window.scrollTo(0, document.body.scrollHeight);
+          window.scrollTo(0, 0);
+        }
+
+        // Click all possible expansion elements
+        const allElements = document.querySelectorAll(
+          "button, a, div, span, li"
+        );
+        allElements.forEach((element) => {
+          const text = element.textContent.toLowerCase();
+          if (
+            text.includes("show") ||
+            text.includes("load") ||
+            text.includes("view") ||
+            text.includes("expand") ||
+            text.includes("more") ||
+            text.includes("all")
+          ) {
+            try {
+              element.click();
+            } catch (e) {
+              // Ignore click errors
+            }
+          }
+        });
+
+        // Wait for content to load
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            // Get all text content including hidden elements
+            let fullText = document.body.innerText;
+
+            // Also get text from specific containers that might contain theatres
+            const containers = document.querySelectorAll(
+              '[class*="venue"], [class*="theatre"], [class*="cinema"], [class*="showtime"], [class*="booking"]'
+            );
+            containers.forEach((container) => {
+              fullText += "\n" + container.textContent;
+            });
+
+            resolve(fullText);
+          }, 5000);
+        });
+      });
+
+      // Strategy 2: Try extraction with additional content
+      const additionalTheatres = extractTheatresAndShowtimes(additionalContent);
+      console.log(
+        `🔄 Additional theatres from enhanced extraction: ${additionalTheatres.length}`
+      );
+
+      // Strategy 3: Try alternative parsing approach for missed theatres
+      const alternativeTheatres = extractTheatresAlternative(additionalContent);
+      console.log(
+        `🔄 Alternative parsing found: ${alternativeTheatres.length} theatres`
+      );
+
+      // Merge all results
+      const allTheatres = [...theatres];
+
+      // Merge additional theatres
+      additionalTheatres.forEach((newTheatre) => {
+        const exists = allTheatres.some(
+          (existing) =>
+            existing.theatre
+              .toLowerCase()
+              .includes(newTheatre.theatre.toLowerCase()) ||
+            newTheatre.theatre
+              .toLowerCase()
+              .includes(existing.theatre.toLowerCase())
+        );
+        if (!exists) {
+          allTheatres.push(newTheatre);
+        }
+      });
+
+      // Merge alternative theatres
+      alternativeTheatres.forEach((newTheatre) => {
+        const exists = allTheatres.some(
+          (existing) =>
+            existing.theatre
+              .toLowerCase()
+              .includes(newTheatre.theatre.toLowerCase()) ||
+            newTheatre.theatre
+              .toLowerCase()
+              .includes(existing.theatre.toLowerCase())
+        );
+        if (!exists) {
+          allTheatres.push(newTheatre);
+        }
+      });
+
+      theatres = allTheatres;
+      console.log(
+        `📊 Total theatres after comprehensive extraction: ${theatres.length}`
+      );
+    }
 
     // Determine current status with priority logic
     let currentStatus;
@@ -443,9 +897,6 @@ function createCelebrationMessage(movieData, movieInfo) {
   const theatreCount = movieData.theatres.length;
 
   const messages = {
-    Kingdom: `👑 *KINGDOM BOOKING NOW LIVE!* ⚔️🎉\n\n🔥 THE WAIT IS OVER! The Kingdom has risen!\n🎬 After months of anticipation, tickets are finally here!\n🎭 Behold the glory - ${theatreCount} theatres are showing!\n\n⚔️ *KINGDOM THEATRES (The royal venues):*\n\n`,
-    "Dhadak 2": `💖 *DHADAK 2 BOOKING NOW LIVE!* 🌹🎉\n\n💕 THE LOVE STORY BEGINS! Hearts are finally dancing!\n🎬 Romance has arrived in ${theatreCount} theatres!\n\n🌹 *DHADAK 2 THEATRES (Where love blooms):*\n\n`,
-    "Son of Sardaar 2": `🗡️ *SON OF SARDAAR 2 BOOKING NOW LIVE!* ⚔️🎉\n\n💪 THE SARDAAR HAS ARRIVED! Action is here!\n🎬 Epic battles await in ${theatreCount} theatres!\n\n⚔️ *SARDAAR THEATRES (Battle grounds):*\n\n`,
     Coolie: `🚂 *COOLIE BOOKING NOW LIVE!* 💪🎉\n\n🔥 ALL ABOARD! The Coolie train has arrived!\n🎬 Action packed journey begins in ${theatreCount} theatres!\n\n🚂 *COOLIE THEATRES (Train stations):*\n\n`,
     "War 2": `💥 *WAR 2 BOOKING NOW LIVE!* 🔥🎉\n\n⚔️ THE BATTLE BEGINS! War has been declared!\n🎬 Epic warfare starts in ${theatreCount} theatres!\n\n💥 *WAR 2 THEATRES (Battlefields):*\n\n`,
   };
@@ -461,12 +912,6 @@ function createCelebrationMessage(movieData, movieInfo) {
  */
 function createCallToAction(movieName) {
   const actions = {
-    Kingdom:
-      "👑 The Kingdom awaits your presence!\n⚔️ Don't miss this epic adventure!",
-    "Dhadak 2":
-      "💖 Love is calling - answer the call!\n🌹 Experience the romance!",
-    "Son of Sardaar 2":
-      "🗡️ The Sardaar calls for warriors!\n💪 Join the epic battle!",
     Coolie:
       "🚂 All aboard the Coolie express!\n💪 Don't miss this action ride!",
     "War 2":
